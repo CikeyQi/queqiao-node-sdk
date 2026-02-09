@@ -87,6 +87,7 @@ export class ForwardConnection extends TypedEmitter<ForwardConnectionEvents> {
         ws.terminate();
         reject(new Error(`WebSocket connect timeout after ${this.connectTimeoutMs}ms`));
       }, this.connectTimeoutMs);
+      connectTimeout.unref?.();
 
       const cleanup = () => {
         clearTimeout(connectTimeout);
@@ -139,6 +140,7 @@ export class ForwardConnection extends TypedEmitter<ForwardConnectionEvents> {
           timer = setTimeout(() => {
             reject(new Error(`WebSocket connect timeout after ${timeoutMs}ms`));
           }, timeoutMs);
+          timer.unref?.();
         }),
       ]);
     } finally {
@@ -165,6 +167,9 @@ export class ForwardConnection extends TypedEmitter<ForwardConnectionEvents> {
 
     await new Promise<void>((resolve) => {
       this.ws?.once('close', () => resolve());
+      if (this.ws?.readyState === this.WebSocketImpl.CLOSING) {
+        return;
+      }
       this.ws?.close(code, reason);
     });
   }
@@ -210,6 +215,7 @@ export class ForwardConnection extends TypedEmitter<ForwardConnectionEvents> {
       this.reconnectTimer = undefined;
       this.connect().catch((error) => this.emit('error', normalizeError(error)));
     }, delay);
+    this.reconnectTimer.unref?.();
 
     this.reconnectDelayMs = Math.min(delay * 2, this.reconnectMaxIntervalMs);
     this.emit('reconnect', this.reconnectAttempt, delay);

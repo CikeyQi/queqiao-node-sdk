@@ -3,20 +3,19 @@ import type { ClientOptions, ForwardConnectionConfig, ReverseServerOptions } fro
 
 type ClientOverrides = Omit<ClientOptions, 'url' | 'mode' | 'server' | 'connections'>;
 type MultiForwardOverrides = Omit<ClientOverrides, 'accessToken'>;
+type ForwardInput = string | ForwardConnectionConfig[];
+type ForwardOverrides<TInput extends ForwardInput> = TInput extends string
+  ? ClientOverrides
+  : MultiForwardOverrides;
 
-export function createClient(url: string, overrides?: ClientOverrides): QueQiaoClient;
-export function createClient(
-  connections: ForwardConnectionConfig[],
-  overrides?: MultiForwardOverrides,
-): QueQiaoClient;
-export function createClient(
-  options: ForwardConnectionConfig[] | string,
-  overrides?: ClientOverrides | MultiForwardOverrides,
+export function createClient<TInput extends ForwardInput>(
+  input: TInput,
+  overrides?: ForwardOverrides<TInput>,
 ): QueQiaoClient {
-  if (typeof options === 'string') {
-    return new QueQiaoClient({ url: options, ...(overrides ?? {}) });
+  if (typeof input === 'string') {
+    return new QueQiaoClient({ url: input, ...(overrides ?? {}) });
   }
-  return new QueQiaoClient({ connections: options, ...(overrides ?? {}) });
+  return new QueQiaoClient({ connections: input, ...(overrides ?? {}) });
 }
 
 export function createReverseClient(
@@ -26,21 +25,11 @@ export function createReverseClient(
   return new QueQiaoClient({ mode: 'reverse', server, ...(overrides ?? {}) });
 }
 
-export async function connectClient(
-  url: string,
-  overrides?: ClientOverrides,
-): Promise<QueQiaoClient>;
-export async function connectClient(
-  connections: ForwardConnectionConfig[],
-  overrides?: MultiForwardOverrides,
-): Promise<QueQiaoClient>;
-export async function connectClient(
-  options: ForwardConnectionConfig[] | string,
-  overrides?: ClientOverrides | MultiForwardOverrides,
+export async function connectClient<TInput extends ForwardInput>(
+  input: TInput,
+  overrides?: ForwardOverrides<TInput>,
 ): Promise<QueQiaoClient> {
-  const client = typeof options === 'string'
-    ? createClient(options, overrides as ClientOverrides | undefined)
-    : createClient(options, overrides as MultiForwardOverrides | undefined);
+  const client = createClient(input, overrides);
   await client.connect();
   return client;
 }

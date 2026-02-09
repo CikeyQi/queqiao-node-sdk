@@ -6,6 +6,14 @@ import type {
   HeaderPolicy,
   ReverseServerOptions,
 } from './types.js';
+import {
+  assertPort,
+  normalizeBoolean,
+  normalizeNonNegativeInt,
+  normalizeOptionalString,
+  normalizePositiveInt,
+  requireNonEmptyString,
+} from './utils.js';
 
 export type NormalizedForwardConnection = {
   selfName: string;
@@ -52,8 +60,8 @@ const DEFAULTS = {
   autoConnect: true,
   strictHeaders: true,
   rejectDuplicateOrigin: true,
-};
-const DEFAULT_SELF_NAME = 'default';
+} as const;
+const DEFAULT_SELF_NAME = 'Server';
 
 export function normalizeClientOptions(options: ClientOptions): NormalizedClientOptions {
   if (!options) {
@@ -64,12 +72,8 @@ export function normalizeClientOptions(options: ClientOptions): NormalizedClient
   if (mode !== 'forward' && mode !== 'reverse') {
     throw new Error(`Invalid mode: ${mode}`);
   }
-  if (typeof options.selfName === 'string' && !options.selfName.trim()) {
-    throw new Error('selfName cannot be empty');
-  }
-  if (typeof options.accessToken === 'string' && !options.accessToken.trim()) {
-    throw new Error('accessToken cannot be empty');
-  }
+  const selfName = normalizeOptionalString(options.selfName, 'selfName');
+  const accessToken = normalizeOptionalString(options.accessToken, 'accessToken');
 
   const hasForwardConnections = Array.isArray(options.connections) && options.connections.length > 0;
   if (mode === 'reverse') {
@@ -80,10 +84,16 @@ export function normalizeClientOptions(options: ClientOptions): NormalizedClient
     throw new Error('Forward mode does not accept server options');
   }
 
-  const requestTimeoutMs = options.requestTimeoutMs ?? options.echoTimeoutMs;
-  const strictHeaders = options.strictHeaders ?? DEFAULTS.strictHeaders;
-  const rejectDuplicateOrigin = options.rejectDuplicateOrigin ?? DEFAULTS.rejectDuplicateOrigin;
-  if (mode === 'forward' && hasForwardConnections && options.accessToken) {
+  const requestTimeoutMs = normalizePositiveInt(
+    options.requestTimeoutMs ?? options.echoTimeoutMs,
+    DEFAULTS.requestTimeoutMs,
+  );
+  const strictHeaders = normalizeBoolean(options.strictHeaders, DEFAULTS.strictHeaders);
+  const rejectDuplicateOrigin = normalizeBoolean(
+    options.rejectDuplicateOrigin,
+    DEFAULTS.rejectDuplicateOrigin,
+  );
+  if (mode === 'forward' && hasForwardConnections && accessToken) {
     throw new Error('Forward connections require accessToken per connection');
   }
   if (mode === 'forward' && hasForwardConnections && options.headers) {
@@ -94,8 +104,8 @@ export function normalizeClientOptions(options: ClientOptions): NormalizedClient
   }
   const headerDefaults = {
     headers: options.headers,
-    selfName: hasForwardConnections ? undefined : options.selfName,
-    accessToken: hasForwardConnections ? undefined : options.accessToken,
+    selfName: hasForwardConnections ? undefined : selfName,
+    accessToken: hasForwardConnections ? undefined : accessToken,
   };
   const heartbeatIntervalMs = normalizeNonNegativeInt(
     options.heartbeatIntervalMs,
@@ -115,35 +125,43 @@ export function normalizeClientOptions(options: ClientOptions): NormalizedClient
     ? normalizeForwardConnections(options, headerDefaults)
     : [];
 
-  if (mode === 'reverse') {
-    if (!options.server || !options.server.port) {
-      throw new Error('ClientOptions.server.port is required for reverse mode');
-    }
+  const server = mode === 'reverse' ? normalizeServerOptions(options.server) : undefined;
+  if (mode === 'reverse' && !server) {
+    throw new Error('ClientOptions.server.port is required for reverse mode');
   }
 
   const headerPolicy: HeaderPolicy = {
     strict: strictHeaders,
-    expectedSelfName: mode === 'reverse' ? undefined : options.selfName,
-    expectedAccessToken: options.accessToken,
+    expectedSelfName: mode === 'reverse' ? undefined : selfName,
+    expectedAccessToken: accessToken,
   };
+
+  const reconnectIntervalMs = normalizePositiveInt(
+    options.reconnectIntervalMs,
+    DEFAULTS.reconnectIntervalMs,
+  );
+  const reconnectMaxIntervalMs = Math.max(
+    reconnectIntervalMs,
+    normalizePositiveInt(options.reconnectMaxIntervalMs, DEFAULTS.reconnectMaxIntervalMs),
+  );
 
   return {
     mode,
     forwardConnections,
-    server: options.server,
+    server,
     headerPolicy,
     rejectDuplicateOrigin,
     headerDefaults,
-    reconnect: options.reconnect ?? DEFAULTS.reconnect,
-    reconnectIntervalMs: normalizePositiveInt(options.reconnectIntervalMs, DEFAULTS.reconnectIntervalMs),
-    reconnectMaxIntervalMs: normalizePositiveInt(options.reconnectMaxIntervalMs, DEFAULTS.reconnectMaxIntervalMs),
+    reconnect: normalizeBoolean(options.reconnect, DEFAULTS.reconnect),
+    reconnectIntervalMs,
+    reconnectMaxIntervalMs,
     connectTimeoutMs: normalizePositiveInt(options.connectTimeoutMs, DEFAULTS.connectTimeoutMs),
     heartbeatIntervalMs,
     heartbeatTimeoutMs,
-    requestTimeoutMs: normalizePositiveInt(requestTimeoutMs, DEFAULTS.requestTimeoutMs),
+    requestTimeoutMs,
     maxPendingRequests: normalizeNonNegativeInt(options.maxPendingRequests, DEFAULTS.maxPendingRequests),
     maxPayloadBytes: normalizeNonNegativeInt(options.maxPayloadBytes, DEFAULTS.maxPayloadBytes),
-    autoConnect: options.autoConnect ?? DEFAULTS.autoConnect,
+    autoConnect: normalizeBoolean(options.autoConnect, DEFAULTS.autoConnect),
     WebSocketImpl: options.WebSocketImpl,
     logger: options.logger,
   };
@@ -158,21 +176,21 @@ export function normalizeForwardConnection(
   },
   fallbackSelfName?: string,
 ): NormalizedForwardConnection {
-  if (!input || !input.url) {
-    throw new Error('Forward connection requires url');
-  }
+  const url = requireNonEmptyString(input?.url, 'Forward connection url');
+  const explicitSelfName = normalizeOptionalString(input.selfName, 'selfName');
+  const explicitAccessToken = normalizeOptionalString(input.accessToken, 'accessToken');
 
   const mergedHeaders = mergeHeaders(defaults.headers, input.headers);
   const mergedNormalized = normalizeHeaderValue(mergedHeaders);
   const resolvedSelfName =
-    input.selfName ??
+    explicitSelfName ??
     defaults.selfName ??
     (mergedNormalized['x-self-name'] ? undefined : fallbackSelfName);
 
   const headers = buildHeaders({
     headers: mergedHeaders,
     selfName: resolvedSelfName,
-    accessToken: input.accessToken ?? defaults.accessToken,
+    accessToken: explicitAccessToken ?? defaults.accessToken,
   });
 
   const selfName = headers['x-self-name'];
@@ -181,7 +199,7 @@ export function normalizeForwardConnection(
   }
   return {
     selfName,
-    url: input.url,
+    url,
     headers,
   };
 }
@@ -230,28 +248,25 @@ function mergeHeaders(
   base?: Record<string, string>,
   override?: Record<string, string>,
 ): Record<string, string> {
-  if (!base && !override) {
-    return {};
-  }
-  if (!base) {
-    return { ...(override ?? {}) };
-  }
-  if (!override) {
-    return { ...base };
-  }
-  return { ...base, ...override };
+  return { ...(base ?? {}), ...(override ?? {}) };
 }
 
-function normalizePositiveInt(value: number | undefined, fallback: number): number {
-  if (!Number.isFinite(value) || (value as number) <= 0) {
-    return fallback;
+function normalizeServerOptions(server?: ReverseServerOptions): ReverseServerOptions | undefined {
+  if (!server) {
+    return undefined;
   }
-  return Math.floor(value as number);
+  const host = normalizeOptionalString(server.host, 'server.host');
+  const path = normalizeOptionalString(server.path, 'server.path');
+  return {
+    port: assertPort(server.port, 'server.port'),
+    host,
+    path: normalizePath(path),
+  };
 }
 
-function normalizeNonNegativeInt(value: number | undefined, fallback: number): number {
-  if (!Number.isFinite(value) || (value as number) < 0) {
-    return fallback;
+function normalizePath(path?: string): string | undefined {
+  if (!path) {
+    return undefined;
   }
-  return Math.floor(value as number);
+  return path.startsWith('/') ? path : `/${path}`;
 }

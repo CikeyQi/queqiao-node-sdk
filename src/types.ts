@@ -2,16 +2,25 @@ import type WebSocket from 'ws';
 
 export type ConnectionMode = 'forward' | 'reverse';
 
+/** Reverse mode server bind options. */
 export interface ReverseServerOptions {
+  /** Listening port in range 0-65535. */
   port: number;
+  /** Bind host, defaults to all interfaces. */
   host?: string;
+  /** Optional URL path, for example `/ws`. */
   path?: string;
 }
 
+/** Forward WebSocket connection entry. */
 export interface ForwardConnectionConfig {
+  /** Target WebSocket URL, for example `ws://127.0.0.1:6700`. */
   url: string;
+  /** Custom headers merged before SDK required headers. */
   headers?: Record<string, string>;
+  /** Server identity, mapped to header `x-self-name`. */
   selfName?: string;
+  /** Access token used to build `Authorization: Bearer ...`. */
   accessToken?: string;
 }
 
@@ -156,34 +165,60 @@ export interface ClientLogger {
   error?: (message: string, meta?: Record<string, unknown>) => void;
 }
 
+/** SDK client runtime options. */
 export interface ClientOptions {
+  /** Connection mode. Defaults to `forward`. */
   mode?: ConnectionMode;
+  /** Single forward URL shortcut. */
   url?: string;
+  /** Forward connection list. */
   connections?: ForwardConnectionConfig[];
+  /** Reverse mode server configuration. */
   server?: ReverseServerOptions;
+  /** Additional headers merged into handshake headers. */
   headers?: Record<string, string>;
+  /** Default self name for single forward connection. */
   selfName?: string;
+  /** Default access token for single forward connection or reverse validation. */
   accessToken?: string;
+  /** Reverse mode strict header validation. */
   strictHeaders?: boolean;
+  /** Reverse mode duplicate origin protection. */
   rejectDuplicateOrigin?: boolean;
+  /** Forward mode auto reconnect switch. */
   reconnect?: boolean;
+  /** Forward reconnect base interval in milliseconds. */
   reconnectIntervalMs?: number;
+  /** Forward reconnect max interval in milliseconds. */
   reconnectMaxIntervalMs?: number;
+  /** Connect timeout in milliseconds. */
   connectTimeoutMs?: number;
+  /** Heartbeat interval in milliseconds. `0` disables heartbeat. */
   heartbeatIntervalMs?: number;
+  /** Heartbeat timeout in milliseconds. */
   heartbeatTimeoutMs?: number;
+  /** @deprecated Use `requestTimeoutMs` instead. */
   echoTimeoutMs?: number;
+  /** Request timeout in milliseconds. */
   requestTimeoutMs?: number;
+  /** Max number of unresolved requests. `0` means unlimited. */
   maxPendingRequests?: number;
+  /** WebSocket max payload bytes. `0` means unlimited. */
   maxPayloadBytes?: number;
+  /** Automatically connect before sending requests. */
   autoConnect?: boolean;
+  /** Custom WebSocket constructor implementation. */
   WebSocketImpl?: typeof WebSocket;
+  /** Optional logger hooks. */
   logger?: ClientLogger;
 }
 
 export interface RequestOptions {
+  /** Custom echo identifier. */
   echo?: string;
+  /** Per-request timeout override in milliseconds. */
   timeoutMs?: number;
+  /** Target self name when multiple connections are configured. */
   selfName?: string;
 }
 
@@ -199,6 +234,11 @@ export interface SendPrivateMessageData {
   uuid?: string | null;
   nickname?: string | null;
   message: MinecraftTextComponent;
+}
+
+export interface SendPrivateMessageResponseData {
+  target_player: Player;
+  message: string;
 }
 
 export interface BroadcastData {
@@ -229,10 +269,10 @@ export type ApiRequestDataMap = {
 };
 
 export type ApiResponseDataMap = {
-  broadcast: unknown;
-  send_private_msg: unknown;
-  send_actionbar: unknown;
-  send_title: unknown;
+  broadcast: void;
+  send_private_msg: SendPrivateMessageResponseData | null;
+  send_actionbar: void;
+  send_title: void;
   send_rcon_command: string;
 };
 

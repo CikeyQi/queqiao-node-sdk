@@ -1,4 +1,5 @@
 import WebSocket, { WebSocketServer } from 'ws';
+import type { IncomingMessage } from 'node:http';
 import { TypedEmitter } from '../emitter.js';
 import type { ClientLogger, HeaderPolicy, ReverseServerOptions } from '../types.js';
 import type { ConnectionEvents } from './types.js';
@@ -116,6 +117,7 @@ export class ReverseConnection extends TypedEmitter<ConnectionEvents> {
         cleanup();
         reject(new Error(`Reverse connection timeout after ${timeoutMs}ms`));
       }, timeoutMs);
+      timeout.unref?.();
 
       const handleOpen = (name: string) => {
         if (selfName && name !== selfName) {
@@ -151,6 +153,11 @@ export class ReverseConnection extends TypedEmitter<ConnectionEvents> {
       this.server?.close(() => resolve());
     });
     this.server = undefined;
+    this.sockets.clear();
+    this.heartbeatStops.clear();
+    this.originBySelfName.clear();
+    this.selfNameByOrigin.clear();
+    this.connectionCounts.clear();
   }
 
   async send(payload: string, selfName: string): Promise<void> {
@@ -184,7 +191,6 @@ export class ReverseConnection extends TypedEmitter<ConnectionEvents> {
 
     if (socket.readyState === this.WebSocketImpl.CLOSED) {
       if (this.sockets.get(selfName) === socket) {
-        this.emit('close', selfName, code, reason);
         this.cleanupConnection(selfName, socket);
       }
       return;
@@ -196,7 +202,7 @@ export class ReverseConnection extends TypedEmitter<ConnectionEvents> {
     });
   }
 
-  private handleConnection(socket: WebSocket, request: import('http').IncomingMessage): void {
+  private handleConnection(socket: WebSocket, request: IncomingMessage): void {
     const normalized = normalizeHeaderValue(request.headers);
     const reject = (reason: string, meta?: Record<string, unknown>) => {
       socket.close(1008, reason);
@@ -219,15 +225,15 @@ export class ReverseConnection extends TypedEmitter<ConnectionEvents> {
       }
     }
 
-    const incomingOrigin = normalized['x-client-origin'];
-    if (this.rejectDuplicateOrigin && incomingOrigin && this.selfNameByOrigin.has(incomingOrigin)) {
-      reject('duplicate client origin', { clientOrigin: incomingOrigin });
-      return;
-    }
-
     const selfName = normalized['x-self-name'];
     if (!selfName) {
       reject('missing x-self-name header');
+      return;
+    }
+    const incomingOrigin = normalized['x-client-origin'];
+    const owner = incomingOrigin ? this.selfNameByOrigin.get(incomingOrigin) : undefined;
+    if (this.rejectDuplicateOrigin && incomingOrigin && owner && owner !== selfName) {
+      reject('duplicate client origin', { clientOrigin: incomingOrigin, owner });
       return;
     }
     const existing = this.sockets.get(selfName);

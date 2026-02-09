@@ -1,4 +1,6 @@
 import type WebSocket from 'ws';
+import { randomUUID } from 'node:crypto';
+import { TextDecoder } from 'node:util';
 import { createConnection } from './connection/factory.js';
 import { TypedEmitter } from './emitter.js';
 import { normalizeClientOptions } from './options.js';
@@ -17,7 +19,16 @@ import type {
   QueQiaoEvent,
   RequestOptions,
 } from './types.js';
-import { isApiResponse, isEvent, normalizeError } from './utils.js';
+import {
+  isApiResponse,
+  isEvent,
+  isPlainObject,
+  normalizeError,
+  normalizeOptionalString,
+  normalizePositiveInt,
+  requireNonEmptyString,
+  safeJsonParse,
+} from './utils.js';
 
 export class QueQiaoClient extends TypedEmitter<ClientEvents> {
   private readonly logger?: ClientLogger;
@@ -28,8 +39,10 @@ export class QueQiaoClient extends TypedEmitter<ClientEvents> {
 
   private readonly connection: ReturnType<typeof createConnection>;
   private readonly pending: PendingRequests;
+  private readonly echoPrefix = randomUUID().slice(0, 8);
   private echoSeq = 0;
   private readonly openConnections = new Set<string>();
+  private readonly decoder = new TextDecoder();
 
   constructor(options: ClientOptions) {
     super();
@@ -61,12 +74,21 @@ export class QueQiaoClient extends TypedEmitter<ClientEvents> {
   }
 
   async close(code = 1000, reason = 'client closing', selfName?: string): Promise<void> {
-    await this.connection.close(code, reason, selfName);
-    if (selfName) {
-      this.pending.rejectByConnection(selfName, new Error('WebSocket connection closed'));
-      return;
+    let closeError: Error | undefined;
+    try {
+      await this.connection.close(code, reason, selfName);
+    } catch (error) {
+      closeError = normalizeError(error);
+    } finally {
+      if (selfName) {
+        this.pending.rejectByConnection(selfName, new Error('WebSocket connection closed'));
+      } else {
+        this.pending.rejectAll(new Error('WebSocket connection closed'));
+      }
     }
-    this.pending.rejectAll(new Error('WebSocket connection closed'));
+    if (closeError) {
+      throw closeError;
+    }
   }
 
   isOpen(selfName?: string): boolean {
@@ -105,20 +127,26 @@ export class QueQiaoClient extends TypedEmitter<ClientEvents> {
     data: TData,
     options?: RequestOptions,
   ): Promise<ApiResponse<TResp>> {
-    const selfName = this.resolveSelfName(options?.selfName);
+    const selfName = await this.resolveSelfName(
+      normalizeOptionalString(options?.selfName, 'options.selfName'),
+    );
     await this.ensureReady(selfName);
 
-    const echo = options?.echo ?? this.nextEcho(selfName);
-    const timeoutMs = options?.timeoutMs ?? this.requestTimeoutMs;
-    const payload: ApiRequest<TData> = { api, data, echo };
+    const echo = normalizeOptionalString(options?.echo, 'options.echo') ?? this.nextEcho(selfName);
+    const timeoutMs = normalizePositiveInt(options?.timeoutMs, this.requestTimeoutMs);
+    const normalizedApi = requireNonEmptyString(api, 'api');
+    if (!isPlainObject(data)) {
+      throw new Error('data must be an object');
+    }
+    const payload: ApiRequest<TData> = { api: normalizedApi, data, echo };
 
-    const pending = this.pending.create<TResp>(echo, timeoutMs, api, selfName);
+    const pending = this.pending.create<TResp>(echo, timeoutMs, normalizedApi, selfName);
 
     try {
       await this.connection.send(JSON.stringify(payload), selfName);
     } catch (error) {
       const normalized = normalizeError(error);
-      this.pending.cancel(echo, normalized);
+      this.pending.cancel(echo, normalized, selfName);
       throw normalized;
     }
 
@@ -137,25 +165,28 @@ export class QueQiaoClient extends TypedEmitter<ClientEvents> {
 
   private nextEcho(selfName: string): string {
     this.echoSeq = (this.echoSeq + 1) % 1_000_000;
-    return `${selfName}-${Date.now()}-${this.echoSeq}`;
+    return `${this.echoPrefix}-${selfName}-${this.echoSeq}`;
   }
 
   private handleMessage(selfName: string, data: WebSocket.RawData): void {
-    const text = typeof data === 'string' ? data : data.toString();
-    let payload: unknown;
-
-    try {
-      payload = JSON.parse(text);
-    } catch (error) {
-      const normalized = normalizeError(error);
-      this.logger?.warn?.('Failed to parse message', { error: normalized, text, selfName });
-      this.emit('error', normalized);
+    const text = this.rawDataToString(data);
+    if (!this.looksLikeJson(text)) {
+      const error = new Error('Received non-JSON message');
+      this.logger?.warn?.('Failed to parse message', { error, text, selfName });
+      this.emit('error', error);
       return;
     }
+    const parsed = safeJsonParse(text);
+    if (!parsed.ok) {
+      this.logger?.warn?.('Failed to parse message', { error: parsed.error, text, selfName });
+      this.emit('error', parsed.error);
+      return;
+    }
+    const payload = parsed.value;
 
     if (isApiResponse(payload)) {
       const echo = payload.echo;
-      if (echo && this.pending.resolve(echo, payload)) {
+      if (echo && this.pending.resolve(echo, payload, selfName)) {
         return;
       }
       this.logger?.debug?.('Unmatched response payload', { payload, selfName });
@@ -198,17 +229,74 @@ export class QueQiaoClient extends TypedEmitter<ClientEvents> {
     }
   }
 
-  private resolveSelfName(selfName?: string): string {
+  private async resolveSelfName(selfName?: string): Promise<string> {
     if (selfName) {
       return selfName;
     }
-    const connections = this.connection.list();
-    if (connections.length === 1) {
-      return connections[0];
+    const pickSingle = (): string | undefined => {
+      const connections = this.connection.list();
+      if (connections.length === 1) {
+        return connections[0];
+      }
+      if (connections.length > 1) {
+        throw new Error('Multiple connections detected. Specify options.selfName.');
+      }
+      return undefined;
+    };
+
+    const resolved = pickSingle();
+    if (resolved) {
+      return resolved;
     }
-    if (connections.length === 0) {
+
+    if (this.mode !== 'reverse') {
       throw new Error('No connections configured.');
     }
-    throw new Error('Multiple connections detected. Specify options.selfName.');
+    if (!this.autoConnect) {
+      throw new Error('No reverse connections available. Wait for a reverse client to connect.');
+    }
+
+    await this.connection.waitForOpen(this.connectTimeoutMs);
+    const after = pickSingle();
+    if (after) {
+      return after;
+    }
+    throw new Error('No reverse connections available. Wait for a reverse client to connect.');
+  }
+
+  private rawDataToString(data: WebSocket.RawData): string {
+    if (typeof data === 'string') {
+      return data;
+    }
+    if (Buffer.isBuffer(data)) {
+      return data.toString();
+    }
+    if (Array.isArray(data)) {
+      if (data.length === 0) {
+        return '';
+      }
+      if (data.length === 1) {
+        return data[0]?.toString() ?? '';
+      }
+      return Buffer.concat(data).toString();
+    }
+    if (data instanceof ArrayBuffer) {
+      return this.decoder.decode(data);
+    }
+    if (ArrayBuffer.isView(data)) {
+      return this.decoder.decode(data);
+    }
+    return String(data);
+  }
+
+  private looksLikeJson(text: string): boolean {
+    for (let i = 0; i < text.length; i += 1) {
+      const code = text.charCodeAt(i);
+      if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d || code === 0xfeff) {
+        continue;
+      }
+      return code === 0x7b || code === 0x5b; // { or [
+    }
+    return false;
   }
 }

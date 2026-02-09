@@ -1,5 +1,6 @@
 import type WebSocket from 'ws';
 import type { TypedEmitter } from '../emitter.js';
+import type { ForwardConnectionConfig } from '../types.js';
 
 export type ConnectionEvents = {
   open: [selfName: string];
@@ -16,6 +17,6 @@ export type Connection = TypedEmitter<ConnectionEvents> & {
   close(code?: number, reason?: string, selfName?: string): Promise<void>;
   send(payload: string, selfName: string): Promise<void>;
   list(): string[];
-  add?: (config: import('../types.js').ForwardConnectionConfig) => void;
+  add?: (config: ForwardConnectionConfig) => void;
   remove?: (selfName: string, code?: number, reason?: string) => Promise<void>;
 };

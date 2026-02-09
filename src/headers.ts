@@ -1,8 +1,12 @@
+import type { IncomingHttpHeaders } from 'node:http';
 import type { HeaderPolicy } from './types.js';
-import { normalizeError } from './utils.js';
+import { normalizeError, normalizeOptionalString } from './utils.js';
 
 export type NormalizedHeaders = Record<string, string>;
 
+const HEADER_SELF_NAME = 'x-self-name';
+const HEADER_CLIENT_ORIGIN = 'x-client-origin';
+const HEADER_AUTHORIZATION = 'authorization';
 const SDK_CLIENT_ORIGIN = 'queqiao-node-sdk';
 
 export function buildHeaders(input: {
@@ -12,26 +16,21 @@ export function buildHeaders(input: {
 }): NormalizedHeaders {
   const base = normalizeHeaderValue(input.headers ?? {});
 
-  if (typeof input.selfName === 'string' && !input.selfName.trim()) {
-    throw normalizeError(new Error('selfName cannot be empty'));
-  }
-  if (typeof input.accessToken === 'string' && !input.accessToken.trim()) {
-    throw normalizeError(new Error('accessToken cannot be empty'));
-  }
+  const selfName = normalizeOptionalString(input.selfName, 'selfName');
+  const accessToken = normalizeOptionalString(input.accessToken, 'accessToken');
 
-  if (input.selfName) {
-    const selfName = input.selfName.trim();
-    assertHeaderMatch(base, 'x-self-name', selfName);
-    base['x-self-name'] = selfName;
+  if (selfName) {
+    assertHeaderMatch(base, HEADER_SELF_NAME, selfName);
+    base[HEADER_SELF_NAME] = selfName;
   }
 
-  assertHeaderMatch(base, 'x-client-origin', SDK_CLIENT_ORIGIN);
-  base['x-client-origin'] = SDK_CLIENT_ORIGIN;
+  assertHeaderMatch(base, HEADER_CLIENT_ORIGIN, SDK_CLIENT_ORIGIN);
+  base[HEADER_CLIENT_ORIGIN] = SDK_CLIENT_ORIGIN;
 
-  if (input.accessToken) {
-    const token = normalizeBearer(input.accessToken);
-    assertHeaderMatch(base, 'authorization', token);
-    base['authorization'] = token;
+  if (accessToken) {
+    const token = normalizeBearer(accessToken);
+    assertHeaderMatch(base, HEADER_AUTHORIZATION, token);
+    base[HEADER_AUTHORIZATION] = token;
   }
 
   return base;
@@ -45,19 +44,19 @@ export function validateNormalizedHeaders(
     return { ok: true };
   }
 
-  const selfName = normalized['x-self-name'];
+  const selfName = normalized[HEADER_SELF_NAME];
 
   if (!selfName) {
-    return { ok: false, reason: 'missing x-self-name header' };
+    return { ok: false, reason: `missing ${HEADER_SELF_NAME} header` };
   }
 
   if (policy.expectedSelfName && policy.expectedSelfName !== selfName) {
-    return { ok: false, reason: 'x-self-name mismatch' };
+    return { ok: false, reason: `${HEADER_SELF_NAME} mismatch` };
   }
 
   if (policy.expectedAccessToken) {
-    if (!matchAuthorization(policy.expectedAccessToken, normalized['authorization'])) {
-      return { ok: false, reason: 'authorization mismatch' };
+    if (!matchAuthorization(policy.expectedAccessToken, normalized[HEADER_AUTHORIZATION])) {
+      return { ok: false, reason: `${HEADER_AUTHORIZATION} mismatch` };
     }
   }
 
@@ -71,7 +70,7 @@ export function matchAuthorization(expectedToken: string, incoming?: string): bo
 }
 
 export function normalizeHeaderValue(
-  headers: import('node:http').IncomingHttpHeaders | Record<string, string>,
+  headers: IncomingHttpHeaders | Record<string, string>,
 ): NormalizedHeaders {
   const normalized: NormalizedHeaders = {};
 
@@ -95,7 +94,7 @@ function assertHeaderMatch(headers: NormalizedHeaders, key: string, value: strin
   if (!headers[key]) {
     return;
   }
-  if (key === 'authorization') {
+  if (key === HEADER_AUTHORIZATION) {
     const left = normalizeBearer(headers[key]);
     const right = normalizeBearer(value);
     if (left !== right) {

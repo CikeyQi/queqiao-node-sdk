@@ -1,26 +1,28 @@
-﻿# QueQiao Node.js SDK (Protocol V2)
+﻿# QueQiao Node SDK
 
-面向鹊桥 Protocol V2 的 Node.js SDK，提供正向/反向 WebSocket 连接、请求回声匹配、事件分发与完整 TypeScript 类型提示。
+QueQiao Protocol V2 的 Node.js/TypeScript SDK，提供正向与反向 WebSocket 接入、请求回声匹配、事件分发、连接治理和完整类型提示。
 
-## 功能
-- 正向与反向 WebSocket 连接
-- 单连接与多连接统一调用
-- Header 规范与鉴权校验
-- 自动重连与心跳
-- 请求超时与并发控制
-- 事件分发与类型提示
+## 核心能力
 
-## 兼容性
-- API 协议: V2 (服务端插件/Mod v0.2.11+)
-- 事件协议: V2 (服务端插件/Mod v0.3.0+)
+- 支持 `forward`（主动连接）与 `reverse`（监听反连）两种模式
+- 统一请求模型：`client.request(api, data, options)`
+- 内建心跳、重连、连接超时、请求超时
+- 多连接池管理（按 `selfName` 路由）
+- Header 规范化与鉴权校验
+- 强类型事件分发（总线事件 + 事件名 + 子类型）
+- 严格 TypeScript 编译与可回归单元测试
 
 ## 安装
+
 ```bash
 npm install @cikeyqi/queqiao-node-sdk
 ```
 
 ## 运行环境
-SDK 以 ESM 形式发布，CommonJS 项目需要使用动态导入：
+
+- Node.js 18+
+- ESM（CommonJS 请使用动态导入）
+
 ```js
 const { createClient } = await import('@cikeyqi/queqiao-node-sdk');
 ```
@@ -28,207 +30,202 @@ const { createClient } = await import('@cikeyqi/queqiao-node-sdk');
 ## 快速开始
 
 ### 正向单连接
+
 ```ts
 import { createClient } from '@cikeyqi/queqiao-node-sdk';
 
 const client = createClient('ws://127.0.0.1:6700', {
   selfName: 'ServerA',
-  accessToken: '123',
+  accessToken: 'token-123',
 });
 
 client.on('open', () => {
   console.log('connected');
 });
 
-await client.request('broadcast', { message: [{ text: 'Hello', color: 'green' }] });
+await client.request('broadcast', {
+  message: [{ text: 'Hello QueQiao', color: 'green' }],
+});
 ```
-说明：单连接未传 `selfName` 时，SDK 会自动使用 `default` 作为 `x-self-name`。
 
 ### 正向多连接
+
 ```ts
 import { createClient } from '@cikeyqi/queqiao-node-sdk';
 
 const client = createClient([
-  { url: 'ws://127.0.0.1:6700', selfName: 'ServerA', accessToken: 'token-a' },
-  { url: 'ws://127.0.0.1:6701', selfName: 'ServerB', accessToken: 'token-b' },
+  { url: 'ws://127.0.0.1:6700', selfName: 'A', accessToken: 'token-a' },
+  { url: 'ws://127.0.0.1:6701', selfName: 'B', accessToken: 'token-b' },
 ]);
 
-await client.request('broadcast', { message: [{ text: 'Hello' }] }, { selfName: 'ServerA' });
+await client.connect();
+
+await client.request(
+  'send_rcon_command',
+  { command: 'list' },
+  { selfName: 'A', timeoutMs: 5000 },
+);
 ```
 
-### 反向模式
+### 反向模式（监听反连）
+
 ```ts
 import { createReverseClient } from '@cikeyqi/queqiao-node-sdk';
 
-const client = createReverseClient({ port: 6700 }, { accessToken: 'secret-token' });
+const client = createReverseClient(
+  { port: 6700, path: '/ws' },
+  { accessToken: 'reverse-token' },
+);
 
-client.on('connection_open', (name) => {
-  console.log('connected:', name);
+client.on('connection_open', (selfName) => {
+  console.log('reverse connected:', selfName);
 });
 
 await client.connect();
 await client.request('broadcast', { message: [{ text: 'Welcome' }] }, { selfName: 'ServerA' });
 ```
-说明：反向模式 `accessToken` 可选，设置后连接方必须携带正确的 `Authorization` 才能建立连接。
 
-## 创建与连接方式
-仅保留 4 种创建方法，避免过度分散：
-1. 正向快捷连接：`connectClient(url, options)`
-2. 正向全功能连接：`createClient(url | connections, options)`
-3. 反向快捷连接：`connectReverseClient(server, options)`
-4. 反向全功能连接：`createReverseClient(server, options)`
+## 工厂方法
 
-```ts
-import {
-  createClient,
-  connectClient,
-  createReverseClient,
-  connectReverseClient,
-} from '@cikeyqi/queqiao-node-sdk';
+- `createClient(url, overrides?)`
+- `createClient(connections, overrides?)`
+- `connectClient(url, overrides?)`
+- `connectClient(connections, overrides?)`
+- `createReverseClient(server, overrides?)`
+- `connectReverseClient(server, overrides?)`
 
-const a = await connectClient('ws://127.0.0.1:6700', { selfName: 'ServerA' });
+说明：
+- `connect*` 会在创建后自动执行 `connect()`。
+- 多连接模式下，`overrides` 不允许全局 `accessToken`，必须在每个连接项中配置。
 
-const b = createClient('ws://127.0.0.1:6700', { selfName: 'ServerA' });
-const c = createClient([
-  { url: 'ws://127.0.0.1:6700', selfName: 'ServerA' },
-  { url: 'ws://127.0.0.1:6701', selfName: 'ServerB' },
-]);
+## QueQiaoClient API
 
-const d = await connectReverseClient({ port: 6700 }, { accessToken: 'secret-token' });
-const e = createReverseClient({ port: 6700 });
-```
+- `connect(selfName?)`
+- `close(code?, reason?, selfName?)`
+- `isOpen(selfName?)`
+- `list()`
+- `add(config)`（仅 `forward`）
+- `remove(selfName, code?, reason?)`
+- `request(api, data, options?)`
 
-## 统一调用方式
-仅提供 `client.request(api, data, options)`。
-多连接场景必须提供 `options.selfName`，单连接可以省略。
-
-常用 API 示例：
-```ts
-await client.request('broadcast', { message: [{ text: 'Hello' }] });
-await client.request('send_private_msg', { nickname: 'Steve', message: [{ text: 'Hi' }] });
-await client.request('send_actionbar', { message: [{ text: 'Tip' }] });
-await client.request('send_title', { title: { text: 'Title' }, subtitle: { text: 'Sub' } });
-await client.request('send_rcon_command', { command: 'list' });
-```
-
-自定义 API 示例：
-```ts
-type CustomResp = { ok: boolean; detail?: string };
-const res = await client.request<{ foo: string }, CustomResp>('custom_api', { foo: 'bar' });
-console.log(res.data?.ok);
-```
-
-内置类型提示的常用 API：
-| API | data 结构 | 返回 data |
-| --- | --- | --- |
-| `broadcast` | `{ message: MinecraftTextComponent }` | `unknown` |
-| `send_private_msg` | `{ uuid?: string; nickname?: string; message: MinecraftTextComponent }` | `unknown` |
-| `send_actionbar` | `{ message: MinecraftTextComponent }` | `unknown` |
-| `send_title` | `{ title?: MinecraftTextComponent; subtitle?: MinecraftTextComponent; fade_in?: number; stay?: number; fade_out?: number }` | `unknown` |
-| `send_rcon_command` | `{ command: string }` | `string` |
-
-## 连接管理
-```ts
-client.list();
-client.add({ url: 'ws://127.0.0.1:6702', selfName: 'ServerC' });
-await client.remove('ServerB');
-await client.connect('ServerA');
-await client.close(1000, 'closing', 'ServerA');
-```
-说明：`list()` 返回已配置或已连接的 `selfName` 列表。
-说明：`add/remove` 仅正向模式可用；反向模式由连接方发起连接。
-说明：`connect/close` 可指定 `selfName`，不指定则对全部连接生效。
-
-## 事件监听
-SDK 会分发三类事件名：
-- `event`
-- 事件名，例如 `PlayerChatEvent`
-- 子类型，例如 `player_chat`
+### request 选项
 
 ```ts
-client.on('event', (event) => {});
-client.on('PlayerChatEvent', (event) => {});
-client.on('player_command', (event) => {});
+interface RequestOptions {
+  echo?: string;
+  timeoutMs?: number;
+  selfName?: string;
+}
 ```
+
+行为约束：
+- `api` 必须是非空字符串
+- `data` 必须是对象
+- 多连接场景必须指定 `options.selfName`
+- 未指定 `echo` 时，SDK 自动生成唯一 echo
+
+## 事件模型
+
+客户端会发出三类业务事件名：
+
+- `event`（通配总线）
+- 协议事件名（如 `PlayerChatEvent`）
+- 协议子类型（如 `player_chat`）
 
 连接维度事件：
+
+- `open`
+- `close`
+- `reconnect`
+- `error`
 - `connection_open`
 - `connection_close`
 - `connection_reconnect`
 - `connection_error`
 
-事件列表 (V2)：
-- `PlayerChatEvent`
-- `PlayerCommandEvent`
-- `PlayerJoinEvent`
-- `PlayerQuitEvent`
-- `PlayerDeathEvent`
-- `PlayerAchievementEvent`
+## 内置 API 类型映射
 
-## Header 规则
-- `x-self-name`：正向与反向均为必填。单连接未传时会自动使用 `default`。
-- `authorization`：由 `accessToken` 生成，设置后会进行鉴权。
-- `x-client-origin`：固定为 `@cikeyqi/queqiao-node-sdk`，不支持自定义。
+| API | 请求 data | 响应 data |
+| --- | --- | --- |
+| `broadcast` | `{ message: MinecraftTextComponent }` | `void` |
+| `send_private_msg` | `{ uuid?: string \| null; nickname?: string \| null; message: MinecraftTextComponent }` | `{ target_player: Player; message: string } \| null` |
+| `send_actionbar` | `{ message: MinecraftTextComponent }` | `void` |
+| `send_title` | `{ title?: MinecraftTextComponent; subtitle?: MinecraftTextComponent; fade_in?: number; stay?: number; fade_out?: number }` | `void` |
+| `send_rcon_command` | `{ command: string }` | `string` |
 
-## 配置
-`ClientOptions` 适用于 `new QueQiaoClient(options)`，也是各创建方法的配置子集。
-| 配置项 | 类型 | 默认值 | 说明 |
+## 配置说明
+
+`ClientOptions` 关键字段：
+
+| 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `mode` | `'forward' \| 'reverse'` | `forward` | 连接模式 |
 | `url` | `string` | - | 正向单连接地址 |
-| `connections` | `ForwardConnectionConfig[]` | - | 正向多连接列表 |
-| `server` | `{ port: number; host?: string; path?: string }` | - | 反向服务端配置 |
+| `connections` | `ForwardConnectionConfig[]` | - | 正向多连接配置 |
+| `server` | `{ port; host?; path? }` | - | 反向监听配置 |
 | `headers` | `Record<string, string>` | `{}` | 自定义 Header |
-| `selfName` | `string` | - | 正向单连接 `x-self-name` |
-| `accessToken` | `string` | - | `Authorization` Header |
-| `strictHeaders` | `boolean` | `true` | 反向模式 Header 严格校验 |
-| `rejectDuplicateOrigin` | `boolean` | `true` | 反向模式拒绝重复 `x-client-origin` |
+| `selfName` | `string` | 单连接缺省为 `Server` | 默认 `x-self-name` |
+| `accessToken` | `string` | - | 默认鉴权 token |
+| `strictHeaders` | `boolean` | `true` | 反向模式严格 Header 校验 |
+| `rejectDuplicateOrigin` | `boolean` | `true` | 反向模式拒绝冲突来源 |
 | `reconnect` | `boolean` | `true` | 正向自动重连 |
 | `reconnectIntervalMs` | `number` | `1000` | 重连初始间隔 |
-| `reconnectMaxIntervalMs` | `number` | `30000` | 重连最大间隔 |
+| `reconnectMaxIntervalMs` | `number` | `30000` | 重连最大间隔（自动不小于初始间隔） |
 | `connectTimeoutMs` | `number` | `10000` | 连接超时 |
-| `heartbeatIntervalMs` | `number` | `0` | 心跳间隔，`0` 关闭 |
-| `heartbeatTimeoutMs` | `number` | `0` | 心跳超时，`0` 表示 `2 * interval` |
+| `heartbeatIntervalMs` | `number` | `0` | 心跳间隔，`0` 表示关闭 |
+| `heartbeatTimeoutMs` | `number` | `0` | 心跳超时，`0` 时自动取 `2 * heartbeatIntervalMs` |
 | `requestTimeoutMs` | `number` | `15000` | 请求超时 |
 | `echoTimeoutMs` | `number` | - | 兼容字段，优先级低于 `requestTimeoutMs` |
-| `maxPendingRequests` | `number` | `1000` | 最大并发请求数，`0` 不限制 |
-| `maxPayloadBytes` | `number` | `0` | 最大消息体，`0` 不限制 |
-| `autoConnect` | `boolean` | `true` | 发送前自动连接 |
+| `maxPendingRequests` | `number` | `1000` | 最大并发待响应请求，`0` 表示不限制 |
+| `maxPayloadBytes` | `number` | `0` | WebSocket 最大消息体，`0` 表示不限制 |
+| `autoConnect` | `boolean` | `true` | 请求前自动建立连接 |
 | `WebSocketImpl` | `typeof WebSocket` | `ws` | 自定义 WebSocket 实现 |
-| `logger` | `ClientLogger` | - | 日志输出 |
+| `logger` | `ClientLogger` | - | 自定义日志钩子 |
 
-说明：正向模式同时提供 `connections` 与 `url` 时，优先使用 `connections`。
-说明：反向模式仅使用 `server`，若同时提供 `url` 或 `connections` 会抛错。
-说明：正向多连接如需鉴权，请在每个连接中设置 `accessToken`，不允许使用顶层 `accessToken` 或 `headers.Authorization`。
-说明：反向模式 `accessToken` 可选，设置后连接方必须携带正确的 `Authorization`，即使 `strictHeaders` 为 `false` 也会校验。
-说明：`headers` 中若与 `selfName/accessToken` 冲突会抛错，避免误配置。
+## Header 与鉴权策略
 
-`ForwardConnectionConfig`：
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `url` | `string` | 连接地址 |
-| `selfName` | `string` | `x-self-name` |
-| `accessToken` | `string` | 连接级别 token |
-| `headers` | `Record<string, string>` | 连接级别自定义 Header |
+SDK 统一处理以下 Header：
 
-`RequestOptions`：
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `echo` | `string` | 自定义回声 |
-| `timeoutMs` | `number` | 单次请求超时 |
-| `selfName` | `string` | 多连接目标 |
+- `x-self-name`：连接标识（必需）
+- `authorization`：由 `accessToken` 规范化为 `Bearer <token>`
+- `x-client-origin`：固定注入 `queqiao-node-sdk`
 
-## 错误处理
-- 连接失败或超时会抛出异常
-- 请求超时会 reject 对应 Promise
-- 连接断开会 reject 该连接上的待完成请求
+校验规则：
 
-## FAQ
-- `Header x-self-name is required`：正向连接必须设置 `selfName`，单连接会默认使用 `default`
-- `authorization mismatch`：连接携带的 `Authorization` 与配置不一致
-- `duplicate client origin`：反向连接检测到重复 `x-client-origin`
+- 严格模式下（默认）校验 `x-self-name` 与 `authorization`
+- 可选拒绝重复 `x-client-origin`，防止来源冲突
 
-## 导出内容
+## 错误处理约定
+
+- 输入参数错误：同步抛出 `Error`
+- 连接失败/超时：`connect` 或 `request` Promise reject
+- 请求超时：按 `timeoutMs` 或全局超时 reject
+- 连接断开：自动 reject 该连接上的所有未完成请求
+
+建议：
+
+- 对 `request` 使用 `try/catch`
+- 监听 `error` 与 `connection_error`
+- 多连接场景为每个请求显式传入 `selfName`
+
+## 开发与质量保障
+
+```bash
+npm run build   # TypeScript 构建
+npm run test    # 单元测试（node:test）
+npm run lint    # ESLint
+npm run format  # Prettier
+```
+
+当前单测覆盖模块：
+
+- `headers`（规范化、冲突检测、鉴权匹配）
+- `options`（模式校验、默认值、约束规则）
+- `pending`（超时、去重、按连接回收）
+- `utils`（类型守卫与基础校验）
+
+## 导出项
+
 ```ts
 import {
   QueQiaoClient,
@@ -236,7 +233,7 @@ import {
   connectClient,
   createReverseClient,
   connectReverseClient,
-  ApiResponse,
-  PlayerChatEvent,
 } from '@cikeyqi/queqiao-node-sdk';
 ```
+
+完整类型（事件、请求/响应、配置等）均可从包根直接导入。

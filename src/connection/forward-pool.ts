@@ -5,6 +5,9 @@ import type { NormalizedForwardConnection } from '../options.js';
 import { normalizeForwardConnection } from '../options.js';
 import { ForwardConnection } from './forward.js';
 import type { ConnectionEvents } from './types.js';
+import { normalizeError } from '../utils.js';
+
+const DEFAULT_SELF_NAME = 'Server';
 
 export interface ForwardConnectionPoolOptions {
   connections: NormalizedForwardConnection[];
@@ -81,7 +84,7 @@ export class ForwardConnectionPool extends TypedEmitter<ConnectionEvents> {
       await connection.connect();
       return;
     }
-    await Promise.all([...this.connections.values()].map((connection) => connection.connect()));
+    await this.runAll('connect', (connection) => connection.connect());
   }
 
   async waitForOpen(timeoutMs: number, selfName?: string): Promise<void> {
@@ -91,8 +94,11 @@ export class ForwardConnectionPool extends TypedEmitter<ConnectionEvents> {
       return;
     }
     if (this.connections.size === 1) {
-      const [connection] = this.connections.values();
-      await connection.waitForOpen(timeoutMs);
+      const first = this.connections.values().next();
+      if (first.done) {
+        throw new Error('No connections configured.');
+      }
+      await first.value.waitForOpen(timeoutMs);
       return;
     }
     throw new Error('Multiple connections configured. Specify selfName.');
@@ -104,7 +110,7 @@ export class ForwardConnectionPool extends TypedEmitter<ConnectionEvents> {
       await connection.close(code, reason);
       return;
     }
-    await Promise.all([...this.connections.values()].map((connection) => connection.close(code, reason)));
+    await this.runAll('close', (connection) => connection.close(code, reason));
   }
 
   async send(payload: string, selfName: string): Promise<void> {
@@ -113,7 +119,8 @@ export class ForwardConnectionPool extends TypedEmitter<ConnectionEvents> {
   }
 
   add(config: ForwardConnectionConfig): void {
-    const normalized = normalizeForwardConnection(config, this.headerDefaults);
+    const fallbackSelfName = this.connections.size === 0 ? DEFAULT_SELF_NAME : undefined;
+    const normalized = normalizeForwardConnection(config, this.headerDefaults, fallbackSelfName);
     this.addConnectionInternal(normalized);
   }
 
@@ -162,5 +169,26 @@ export class ForwardConnectionPool extends TypedEmitter<ConnectionEvents> {
       throw new Error(`Unknown connection: ${selfName}`);
     }
     return connection;
+  }
+
+  private async runAll(
+    action: 'connect' | 'close',
+    runner: (connection: ForwardConnection) => Promise<void>,
+  ): Promise<void> {
+    const failures: string[] = [];
+    await Promise.all(
+      [...this.connections.entries()].map(async ([name, connection]) => {
+        try {
+          await runner(connection);
+        } catch (error) {
+          failures.push(`${name}: ${normalizeError(error).message}`);
+        }
+      }),
+    );
+    if (failures.length > 0) {
+      throw new Error(
+        `Failed to ${action} ${failures.length} connection(s): ${failures.sort().join('; ')}`,
+      );
+    }
   }
 }
