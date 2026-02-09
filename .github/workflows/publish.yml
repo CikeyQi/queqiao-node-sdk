@@ -1,0 +1,69 @@
+name: Publish to npm
+
+on:
+  push:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check_version:
+    runs-on: ubuntu-latest
+    outputs:
+      version_changed: ${{ steps.version_check.outputs.version_changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check version change
+        id: version_check
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+
+          BEFORE_SHA="${{ github.event.before }}"
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "version_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PREV_VERSION=$(git show "$BEFORE_SHA:package.json" | node -e "const fs=require('fs');const data=fs.readFileSync(0,'utf8');console.log(JSON.parse(data).version)")
+          if [ "$CURRENT_VERSION" != "$PREV_VERSION" ]; then
+            echo "version_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: check_version
+    if: needs.check_version.outputs.version_changed == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
