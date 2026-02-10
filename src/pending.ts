@@ -36,7 +36,6 @@ export class PendingRequests {
         const scope = connection ? `${connection}/${api}` : api;
         reject(new Error(`Request timeout after ${timeoutMs}ms: ${scope}`));
       }, timeoutMs);
-      timeout.unref?.();
 
       this.pending.set(key, {
         resolve: (response) => resolve(response as ApiResponse<T>),

@@ -18,10 +18,12 @@ test('pending request resolves by echo and connection', async () => {
   await assert.doesNotReject(promise);
 });
 
-test('duplicate pending echo in same connection is rejected', () => {
+test('duplicate pending echo in same connection is rejected', async () => {
   const pending = new PendingRequests(10);
-  pending.create('dup', 1000, 'broadcast', 'A');
+  const first = pending.create('dup', 1000, 'broadcast', 'A');
   assert.throws(() => pending.create('dup', 1000, 'broadcast', 'A'), /Duplicate echo value: dup/);
+  pending.cancel('dup', new Error('cleanup'), 'A');
+  await assert.rejects(first, /cleanup/);
 });
 
 test('rejectByConnection only rejects matching connection', async () => {

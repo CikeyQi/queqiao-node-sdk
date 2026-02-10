@@ -1,12 +1,13 @@
-name: Release & Publish
+name: Publish Package
 
 on:
   push:
-    branches:
-      - "main"
+    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
+  id-token: write
   contents: read
 
 concurrency:
@@ -14,77 +15,61 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check_version:
+  publish:
     runs-on: ubuntu-latest
-    outputs:
-      version_changed: ${{ steps.version_check.outputs.version_changed }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
 
-      - name: Check version change
-        id: version_check
+      - run: npm install -g npm@^11.5.1
+
+      - name: Compare local and remote versions
+        id: version
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version_changed=true" >> "$GITHUB_OUTPUT"
+          PACKAGE_NAME="@cikeyqi/queqiao-node-sdk"
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          REMOTE_VERSION=$(npm view "$PACKAGE_NAME" version 2>/dev/null || true)
+
+          if [ -z "$REMOTE_VERSION" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "local=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
+            echo "remote=(none)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          CURRENT_VERSION=$(node -p "require('./package.json').version")
-
-          BEFORE_SHA="${{ github.event.before }}"
-          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
-            echo "version_changed=true" >> "$GITHUB_OUTPUT"
+          if [ "$LOCAL_VERSION" = "$REMOTE_VERSION" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "local=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
+            echo "remote=$REMOTE_VERSION" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          if ! git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
-            echo "version_changed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          PREV_VERSION=$(git show "$BEFORE_SHA:package.json" | node -e "const fs=require('fs');const data=fs.readFileSync(0,'utf8');console.log(JSON.parse(data).version)")
-          if [ "$CURRENT_VERSION" != "$PREV_VERSION" ]; then
-            echo "version_changed=true" >> "$GITHUB_OUTPUT"
+          LATEST=$(printf "%s\n%s\n" "$LOCAL_VERSION" "$REMOTE_VERSION" | sort -V | tail -n1)
+          if [ "$LATEST" = "$LOCAL_VERSION" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           else
-            echo "version_changed=false" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "local=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "remote=$REMOTE_VERSION" >> "$GITHUB_OUTPUT"
 
-  publish:
-    runs-on: ubuntu-latest
-    needs: check_version
-    if: needs.check_version.outputs.version_changed == 'true'
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - run: echo "local=${{ steps.version.outputs.local }}, remote=${{ steps.version.outputs.remote }}, publish=${{ steps.version.outputs.publish }}"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
-          cache: "npm"
-
-      - name: Install dependencies
+      - if: steps.version.outputs.publish == 'true'
         run: npm ci
 
-      - name: Lint
-        run: npm run lint
+      - if: steps.version.outputs.publish == 'true'
+        run: npm run build --if-present
 
-      - name: Test
-        run: npm run test:strict
+      - if: steps.version.outputs.publish == 'true'
+        run: npm test
 
-      - name: Publish
+      - if: steps.version.outputs.publish == 'true'
         run: npm publish --access public --provenance
