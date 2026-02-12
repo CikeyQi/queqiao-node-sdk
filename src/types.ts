@@ -165,32 +165,8 @@ export interface ClientLogger {
   error?: (message: string, meta?: Record<string, unknown>) => void;
 }
 
-/** SDK client runtime options. */
-export interface ClientOptions {
-  /** Connection mode. Defaults to `forward`. */
-  mode?: ConnectionMode;
-  /** Single forward URL shortcut. */
-  url?: string;
-  /** Forward connection list. */
-  connections?: ForwardConnectionConfig[];
-  /** Reverse mode server configuration. */
-  server?: ReverseServerOptions;
-  /** Additional headers merged into handshake headers. */
-  headers?: Record<string, string>;
-  /** Default self name for single forward connection. */
-  selfName?: string;
-  /** Default access token for single forward connection or reverse validation. */
-  accessToken?: string;
-  /** Reverse mode strict header validation. */
-  strictHeaders?: boolean;
-  /** Reverse mode duplicate origin protection. */
-  rejectDuplicateOrigin?: boolean;
-  /** Forward mode auto reconnect switch. */
-  reconnect?: boolean;
-  /** Forward reconnect base interval in milliseconds. */
-  reconnectIntervalMs?: number;
-  /** Forward reconnect max interval in milliseconds. */
-  reconnectMaxIntervalMs?: number;
+/** Shared runtime options for all modes. */
+export interface BaseClientOptions {
   /** Connect timeout in milliseconds. */
   connectTimeoutMs?: number;
   /** Heartbeat interval in milliseconds. `0` disables heartbeat. */
@@ -213,6 +189,44 @@ export interface ClientOptions {
   logger?: ClientLogger;
 }
 
+/** Forward mode runtime options. */
+export interface ForwardClientOptions extends BaseClientOptions {
+  /** Connection mode. Defaults to `forward`. */
+  mode?: 'forward';
+  /** Single forward URL shortcut. */
+  url?: string;
+  /** Forward connection list. */
+  connections?: ForwardConnectionConfig[];
+  /** Additional headers merged into handshake headers. */
+  headers?: Record<string, string>;
+  /** Default self name for single forward connection. */
+  selfName?: string;
+  /** Default access token for single forward connection. */
+  accessToken?: string;
+  /** Forward mode auto reconnect switch. */
+  reconnect?: boolean;
+  /** Forward reconnect base interval in milliseconds. */
+  reconnectIntervalMs?: number;
+  /** Forward reconnect max interval in milliseconds. */
+  reconnectMaxIntervalMs?: number;
+}
+
+/** Reverse mode runtime options. */
+export interface ReverseClientOptions extends BaseClientOptions {
+  mode: 'reverse';
+  /** Reverse mode server configuration. */
+  server: ReverseServerOptions;
+  /** Expected access token for reverse validation. */
+  accessToken?: string;
+  /** Reverse mode strict header validation. */
+  strictHeaders?: boolean;
+  /** Reverse mode duplicate origin protection. */
+  rejectDuplicateOrigin?: boolean;
+}
+
+/** SDK client runtime options. */
+export type ClientOptions = ForwardClientOptions | ReverseClientOptions;
+
 export interface RequestOptions {
   /** Custom echo identifier. */
   echo?: string;
@@ -220,6 +234,34 @@ export interface RequestOptions {
   timeoutMs?: number;
   /** Target self name when multiple connections are configured. */
   selfName?: string;
+}
+
+export interface ConnectionRefOptions {
+  /** Target self name when multiple connections are configured. */
+  selfName?: string;
+}
+
+export interface ConnectOptions extends ConnectionRefOptions {}
+
+export interface CloseOptions extends ConnectionRefOptions {
+  /** WebSocket close code. Defaults to `1000`. */
+  code?: number;
+  /** Close reason text. Defaults to `client closing`. */
+  reason?: string;
+}
+
+export interface RemoveOptions {
+  /** Target self name. */
+  selfName: string;
+  /** WebSocket close code. Defaults to `1000`. */
+  code?: number;
+  /** Close reason text. Defaults to `client closing`. */
+  reason?: string;
+}
+
+export interface ConnectionStatus {
+  selfName: string;
+  open: boolean;
 }
 
 export interface SendTitleData {

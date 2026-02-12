@@ -34,6 +34,26 @@ test('forward multi-connection rejects global accessToken', () => {
   );
 });
 
+test('forward multi-connection rejects global selfName', () => {
+  assert.throws(
+    () =>
+      normalizeClientOptions({
+        connections: [{ url: 'ws://127.0.0.1:6700', selfName: 'A' }],
+        selfName: 'Shared',
+      }),
+    /Forward connections require selfName per connection/,
+  );
+
+  assert.throws(
+    () =>
+      normalizeClientOptions({
+        connections: [{ url: 'ws://127.0.0.1:6700', selfName: 'A' }],
+        headers: { 'x-self-name': 'Shared' },
+      }),
+    /Forward connections require selfName per connection/,
+  );
+});
+
 test('reverse mode requires server configuration', () => {
   assert.throws(
     () =>
@@ -41,5 +61,39 @@ test('reverse mode requires server configuration', () => {
         mode: 'reverse',
       }),
     /ClientOptions\.server\.port is required for reverse mode/,
+  );
+});
+
+test('reverse mode rejects forward-only headers and selfName', () => {
+  assert.throws(
+    () =>
+      normalizeClientOptions({
+        mode: 'reverse',
+        server: { port: 6700 },
+        headers: { 'x-any': 'v' },
+      }),
+    /Reverse mode does not accept headers/,
+  );
+
+  assert.throws(
+    () =>
+      normalizeClientOptions({
+        mode: 'reverse',
+        server: { port: 6700 },
+        selfName: 'Server-A',
+      }),
+    /Reverse mode does not accept selfName/,
+  );
+});
+
+test('reverse mode rejects reconnect options', () => {
+  assert.throws(
+    () =>
+      normalizeClientOptions({
+        mode: 'reverse',
+        server: { port: 6700 },
+        reconnect: true,
+      }),
+    /Reverse mode does not accept reconnect options/,
   );
 });

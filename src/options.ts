@@ -1,9 +1,12 @@
 import { buildHeaders, normalizeHeaderValue } from './headers.js';
 import type {
+  BaseClientOptions,
   ClientOptions,
   ConnectionMode,
+  ForwardClientOptions,
   ForwardConnectionConfig,
   HeaderPolicy,
+  ReverseClientOptions,
   ReverseServerOptions,
 } from './types.js';
 import {
@@ -72,41 +75,139 @@ export function normalizeClientOptions(options: ClientOptions): NormalizedClient
   if (mode !== 'forward' && mode !== 'reverse') {
     throw new Error(`Invalid mode: ${mode}`);
   }
-  const selfName = normalizeOptionalString(options.selfName, 'selfName');
-  const accessToken = normalizeOptionalString(options.accessToken, 'accessToken');
-
-  const hasForwardConnections = Array.isArray(options.connections) && options.connections.length > 0;
   if (mode === 'reverse') {
-    if (options.url || hasForwardConnections) {
-      throw new Error('Reverse mode does not accept url or connections');
-    }
-  } else if (options.server) {
+    return normalizeReverseClientOptions(options as ReverseClientOptions);
+  }
+  return normalizeForwardClientOptions(options as ForwardClientOptions);
+}
+
+function normalizeForwardClientOptions(options: ForwardClientOptions): NormalizedClientOptions {
+  const candidate = options as unknown as Record<string, unknown>;
+  if (candidate.server !== undefined) {
     throw new Error('Forward mode does not accept server options');
   }
 
-  const requestTimeoutMs = normalizePositiveInt(
-    options.requestTimeoutMs ?? options.echoTimeoutMs,
-    DEFAULTS.requestTimeoutMs,
-  );
-  const strictHeaders = normalizeBoolean(options.strictHeaders, DEFAULTS.strictHeaders);
-  const rejectDuplicateOrigin = normalizeBoolean(
-    options.rejectDuplicateOrigin,
-    DEFAULTS.rejectDuplicateOrigin,
-  );
-  if (mode === 'forward' && hasForwardConnections && accessToken) {
+  const selfName = normalizeOptionalString(options.selfName, 'selfName');
+  const accessToken = normalizeOptionalString(options.accessToken, 'accessToken');
+  const hasForwardConnections = Array.isArray(options.connections) && options.connections.length > 0;
+  if (hasForwardConnections && selfName) {
+    throw new Error('Forward connections require selfName per connection');
+  }
+  if (hasForwardConnections && accessToken) {
     throw new Error('Forward connections require accessToken per connection');
   }
-  if (mode === 'forward' && hasForwardConnections && options.headers) {
+  if (hasForwardConnections && options.headers) {
     const normalized = normalizeHeaderValue(options.headers);
+    if (normalized['x-self-name']) {
+      throw new Error('Forward connections require selfName per connection');
+    }
     if (normalized['authorization']) {
       throw new Error('Forward connections require accessToken per connection');
     }
   }
+
   const headerDefaults = {
     headers: options.headers,
     selfName: hasForwardConnections ? undefined : selfName,
     accessToken: hasForwardConnections ? undefined : accessToken,
   };
+  const forwardConnections = normalizeForwardConnections(options, headerDefaults);
+
+  const reconnectIntervalMs = normalizePositiveInt(
+    options.reconnectIntervalMs,
+    DEFAULTS.reconnectIntervalMs,
+  );
+  const reconnectMaxIntervalMs = Math.max(
+    reconnectIntervalMs,
+    normalizePositiveInt(options.reconnectMaxIntervalMs, DEFAULTS.reconnectMaxIntervalMs),
+  );
+  const shared = normalizeSharedClientOptions(options);
+
+  return {
+    mode: 'forward',
+    forwardConnections,
+    server: undefined,
+    headerPolicy: {
+      strict: DEFAULTS.strictHeaders,
+      expectedSelfName: selfName,
+      expectedAccessToken: accessToken,
+    },
+    rejectDuplicateOrigin: DEFAULTS.rejectDuplicateOrigin,
+    headerDefaults,
+    reconnect: normalizeBoolean(options.reconnect, DEFAULTS.reconnect),
+    reconnectIntervalMs,
+    reconnectMaxIntervalMs,
+    ...shared,
+  };
+}
+
+function normalizeReverseClientOptions(options: ReverseClientOptions): NormalizedClientOptions {
+  const candidate = options as unknown as Record<string, unknown>;
+  if (candidate.url !== undefined || candidate.connections !== undefined) {
+    throw new Error('Reverse mode does not accept url or connections');
+  }
+  if (candidate.headers !== undefined) {
+    throw new Error('Reverse mode does not accept headers');
+  }
+  if (candidate.selfName !== undefined) {
+    throw new Error('Reverse mode does not accept selfName');
+  }
+  if (
+    candidate.reconnect !== undefined ||
+    candidate.reconnectIntervalMs !== undefined ||
+    candidate.reconnectMaxIntervalMs !== undefined
+  ) {
+    throw new Error('Reverse mode does not accept reconnect options');
+  }
+
+  const server = normalizeServerOptions(options.server);
+  if (!server) {
+    throw new Error('ClientOptions.server.port is required for reverse mode');
+  }
+
+  const accessToken = normalizeOptionalString(options.accessToken, 'accessToken');
+  const strictHeaders = normalizeBoolean(options.strictHeaders, DEFAULTS.strictHeaders);
+  const rejectDuplicateOrigin = normalizeBoolean(
+    options.rejectDuplicateOrigin,
+    DEFAULTS.rejectDuplicateOrigin,
+  );
+  const shared = normalizeSharedClientOptions(options);
+
+  return {
+    mode: 'reverse',
+    forwardConnections: [],
+    server,
+    headerPolicy: {
+      strict: strictHeaders,
+      expectedAccessToken: accessToken,
+    },
+    rejectDuplicateOrigin,
+    headerDefaults: {},
+    reconnect: false,
+    reconnectIntervalMs: DEFAULTS.reconnectIntervalMs,
+    reconnectMaxIntervalMs: DEFAULTS.reconnectMaxIntervalMs,
+    ...shared,
+  };
+}
+
+function normalizeSharedClientOptions(
+  options: BaseClientOptions,
+): Pick<
+  NormalizedClientOptions,
+  | 'connectTimeoutMs'
+  | 'heartbeatIntervalMs'
+  | 'heartbeatTimeoutMs'
+  | 'requestTimeoutMs'
+  | 'maxPendingRequests'
+  | 'maxPayloadBytes'
+  | 'autoConnect'
+  | 'WebSocketImpl'
+  | 'logger'
+> {
+  const requestTimeoutMs = normalizePositiveInt(
+    options.requestTimeoutMs ?? options.echoTimeoutMs,
+    DEFAULTS.requestTimeoutMs,
+  );
   const heartbeatIntervalMs = normalizeNonNegativeInt(
     options.heartbeatIntervalMs,
     DEFAULTS.heartbeatIntervalMs,
@@ -121,40 +222,7 @@ export function normalizeClientOptions(options: ClientOptions): NormalizedClient
     heartbeatTimeoutMs = heartbeatIntervalMs * 2;
   }
 
-  const forwardConnections = mode === 'forward'
-    ? normalizeForwardConnections(options, headerDefaults)
-    : [];
-
-  const server = mode === 'reverse' ? normalizeServerOptions(options.server) : undefined;
-  if (mode === 'reverse' && !server) {
-    throw new Error('ClientOptions.server.port is required for reverse mode');
-  }
-
-  const headerPolicy: HeaderPolicy = {
-    strict: strictHeaders,
-    expectedSelfName: mode === 'reverse' ? undefined : selfName,
-    expectedAccessToken: accessToken,
-  };
-
-  const reconnectIntervalMs = normalizePositiveInt(
-    options.reconnectIntervalMs,
-    DEFAULTS.reconnectIntervalMs,
-  );
-  const reconnectMaxIntervalMs = Math.max(
-    reconnectIntervalMs,
-    normalizePositiveInt(options.reconnectMaxIntervalMs, DEFAULTS.reconnectMaxIntervalMs),
-  );
-
   return {
-    mode,
-    forwardConnections,
-    server,
-    headerPolicy,
-    rejectDuplicateOrigin,
-    headerDefaults,
-    reconnect: normalizeBoolean(options.reconnect, DEFAULTS.reconnect),
-    reconnectIntervalMs,
-    reconnectMaxIntervalMs,
     connectTimeoutMs: normalizePositiveInt(options.connectTimeoutMs, DEFAULTS.connectTimeoutMs),
     heartbeatIntervalMs,
     heartbeatTimeoutMs,
@@ -205,7 +273,7 @@ export function normalizeForwardConnection(
 }
 
 function normalizeForwardConnections(
-  options: ClientOptions,
+  options: ForwardClientOptions,
   defaults: {
     headers?: Record<string, string>;
     selfName?: string;

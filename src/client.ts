@@ -11,8 +11,13 @@ import type {
   ClientEvents,
   ClientLogger,
   ClientOptions,
+  CloseOptions,
+  ConnectOptions,
+  ConnectionRefOptions,
+  ConnectionStatus,
   ConnectionMode,
   ForwardConnectionConfig,
+  RemoveOptions,
   ApiRequestDataMap,
   ApiResponseDataMap,
   KnownApi,
@@ -46,6 +51,8 @@ export class QueQiaoClient extends TypedEmitter<ClientEvents> {
 
   constructor(options: ClientOptions) {
     super();
+    // Prevent process crashes when users do not attach an explicit `error` listener.
+    super.on('error', (_error) => {});
     const resolved = normalizeClientOptions(options);
     this.logger = resolved.logger;
     this.autoConnect = resolved.autoConnect;
@@ -69,11 +76,15 @@ export class QueQiaoClient extends TypedEmitter<ClientEvents> {
     this.connection.on('message', (selfName, data: WebSocket.RawData) => this.handleMessage(selfName, data));
   }
 
-  async connect(selfName?: string): Promise<void> {
+  async connect(options: ConnectOptions = {}): Promise<void> {
+    const selfName = normalizeOptionalString(options.selfName, 'options.selfName');
     await this.connection.connect(selfName);
   }
 
-  async close(code = 1000, reason = 'client closing', selfName?: string): Promise<void> {
+  async close(options: CloseOptions = {}): Promise<void> {
+    const selfName = normalizeOptionalString(options.selfName, 'options.selfName');
+    const code = this.normalizeCloseCode(options.code, 1000);
+    const reason = this.normalizeCloseReason(options.reason, 'client closing');
     let closeError: Error | undefined;
     try {
       await this.connection.close(code, reason, selfName);
@@ -91,12 +102,20 @@ export class QueQiaoClient extends TypedEmitter<ClientEvents> {
     }
   }
 
-  isOpen(selfName?: string): boolean {
+  isOpen(options: ConnectionRefOptions = {}): boolean {
+    const selfName = normalizeOptionalString(options.selfName, 'options.selfName');
     return this.connection.isOpen(selfName);
   }
 
   list(): string[] {
     return this.connection.list();
+  }
+
+  status(): ConnectionStatus[] {
+    return this.connection.list().map((selfName) => ({
+      selfName,
+      open: this.connection.isOpen(selfName),
+    }));
   }
 
   add(config: ForwardConnectionConfig): void {
@@ -109,7 +128,10 @@ export class QueQiaoClient extends TypedEmitter<ClientEvents> {
     this.connection.add(config);
   }
 
-  async remove(selfName: string, code = 1000, reason = 'client closing'): Promise<void> {
+  async remove(options: RemoveOptions): Promise<void> {
+    const selfName = requireNonEmptyString(options?.selfName, 'options.selfName');
+    const code = this.normalizeCloseCode(options.code, 1000);
+    const reason = this.normalizeCloseReason(options.reason, 'client closing');
     if (this.connection.remove) {
       await this.connection.remove(selfName, code, reason);
       return;
@@ -262,6 +284,23 @@ export class QueQiaoClient extends TypedEmitter<ClientEvents> {
       return after;
     }
     throw new Error('No reverse connections available. Wait for a reverse client to connect.');
+  }
+
+  private normalizeCloseCode(value: unknown, fallback: number): number {
+    if (value === undefined) {
+      return fallback;
+    }
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 65535) {
+      throw new Error('options.code must be a valid close code (0-65535)');
+    }
+    return value;
+  }
+
+  private normalizeCloseReason(value: unknown, fallback: string): string {
+    if (value === undefined) {
+      return fallback;
+    }
+    return requireNonEmptyString(value, 'options.reason');
   }
 
   private rawDataToString(data: WebSocket.RawData): string {
